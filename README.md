@@ -1,68 +1,190 @@
-# PlasmidGPT: a generative framework for plasmid design and annotation
-![github](https://github.com/user-attachments/assets/fc75bf4f-972c-4e3e-913e-499f01ab41ba)
+# Plasmid Embedding Visualization Project
+![github](d190e38f-a030-493f-8bfc-a742cba2d866.png)
 
-We introduce PlasmidGPT, a generative language model pretrained on 153k engineered plasmid sequences from Addgene (https://www.addgene.org/). PlasmidGPT generates de novo sequences that share similar characteristics with engineered plasmids but show low sequence identity to the training data. We demonstrate its ability to generate plasmids in a controlled manner based on the input sequence or specific design constraint. Moreover, our model learns informative embeddings of both engineered and natural plasmids, allowing for efficient prediction of a wide range of sequence-related attributes.
+This project aims to visualize plasmid sequence embeddings. By leveraging the t - SNE (t - Distributed Stochastic Neighbor Embedding) algorithm, it downsizes high - dimensional embedding data into a two - dimensional space, facilitating an intuitive understanding of the relationships among data points. The project encompasses two primary stages: first, computing the embedding representations of plasmid sequences using a pre - trained model; second, implementing t - SNE dimensionality reduction on the embedding data and visualizing the outcomes.
 
 ## Table of Contents
 
 - [Installation](#Installation)
-- [Trained model](#Trained-model)
-- [Sequence generation](#Sequence-generation)
-- [Model embeddings](#Model-embeddings)
+- [Trained model and tokenizer](#Trained-model-and-tokenizer)
+- [Embedding Calculation](#Embedding-Calculation)
+- [t - SNE Dimensionality Reduction and Visualization](#t---SNE-Dimensionality-Reduction-and-Visualization)
 - [Sequence annotation](#Sequence-annotation)
 
 ## Installation
 Python package dependencies:
-- torch 2.0.1
-- transformers 4.37.2
-- pandas 2.2.0
-- seaborn 0.13.2
+- torch 2.5.0
+- transformers 4.28.1
+- numpy 2.0.2
+- PyQt6 6.9.0
+- scikit-learn 1.6.1
 
-We recommend using [Conda](https://docs.conda.io/en/latest/index.html) to install our packages. For convenience, we have provided a conda environment file with package versions that are compatiable with the current version of the program. The conda environment can be setup with the following comments:
+We recommend using [Conda](https://docs.conda.io/en/latest/index.html) to install our packages. 
 
-1. Clone this repository:
-   ```bash
-     git clone https://github.com/lingxusb/PlasmidGPT.git
-     cd PlasmidGPT
-   ```
-
-2. Create and activate the Conda environment:
+1. Create and activate the Conda environment:
    ```bash
    conda env create -f env.yml
    conda activate PlasmidGPT
    ```
+2. Install python package dependencies:
+   ```bash
+   pip install torch numpy transformers matplotlib scikit-learn
+   ```
 
-## Trained model
+## Trained model and tokenizer
 The trained model and tokenizer is availale at [huggingface](https://huggingface.co/lingxusb/PlasmidGPT/tree/main).
 - ```pretrained_model.pt```, pretrained PlasmidGPT model, can be accessed [here](https://huggingface.co/lingxusb/PlasmidGPT/blob/main/pretrained_model.pt)
 - ```addgene_trained_dna_tokenizer.json```, trained BPE tokenizer on Addgene plasmid sequences, can be accessed [here](https://huggingface.co/lingxusb/PlasmidGPT/blob/main/addgene_trained_dna_tokenizer.json)
 
 
-## Sequence generation
+## Embedding Calculation
+This functionality is embodied in the whole1.py file. The core workflow is as follows:
+1.Data Loading: Load the plasmid sequence file and the pre - trained model.
+2.Tokenization: Employ the pre - trained tokenizer to tokenize the sequences and append special tokens.
+3.Model Inference: Feed the tokenized sequences into the pre - trained model to retrieve the hidden layer states.
+4.Embedding Calculation: Determine the mean of the hidden layer states to derive the embedding representation for each sequence.
+
 ```python
+import re
 import torch
+import numpy as np
+from transformers import PreTrainedTokenizerFast
 
-# load the model
-device = 'cpu' # use 'cuda' for GPU
 
-model = torch.load(pt_file_path).to(device)
-model.eval()
+def parse_sequences(file_path: str) -> dict:
+    """Parse FASTA file and return dictionary of sequences"""
+    sequences = {}
+    current_id = None
+    current_seq = []
 
-# start sequence
-input_ids = tokenizer.encode(start_sequence, return_tensors='pt').to(device)
+    with open(file_path, 'r') as file:
+        for line in file:
+            line = line.strip()
+            if line.startswith('>'):
+                if current_id is not None:
+                    sequences[current_id] = ''.join(current_seq)
+                current_id = line[1:]
+                current_seq = []
+            else:
+                cleaned_line = re.sub(r'[^A-Za-z]', '', line.upper())
+                if cleaned_line:
+                    current_seq.append(cleaned_line)
 
-# model generation
-outputs = model.generate(
-    input_ids,
-    max_length=300,
-    num_return_sequences=1,
-    temperature=1.0,
-    do_sample=True,
-    generation_config=GenerationConfig.from_model_config(model.config)
-)
+        if current_id is not None and current_seq:
+            sequences[current_id] = ''.join(current_seq)
 
-# transform tokens back to DNA ucleotide sequence:
-generated_sequence = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return sequences
+
+
+def process_sequence(sequence, model, tokenizer, device, max_length=1024):
+    """Process a single sequence, handling long sequences by chunking"""
+    # Tokenize with the same pattern as your original code
+    idx = [3] * 10
+    tokenized_sequence = idx + [2] + tokenizer.encode(sequence)
+
+    # Split into chunks if too long
+    chunks = [tokenized_sequence[i:i + max_length] for i in range(0, len(tokenized_sequence), max_length)]
+
+    hidden_states = []
+    for chunk in chunks:
+        # Convert to tensor and move to device
+        input_ids = torch.tensor([chunk], dtype=torch.long).to(device)
+
+        # Get embeddings
+        with torch.no_grad():
+            model.config.output_hidden_states = True
+            outputs = model(input_ids)
+            chunk_hidden = outputs.hidden_states[-1].cpu().numpy()
+            chunk_hidden = np.mean(chunk_hidden, axis=1).reshape(-1)
+            hidden_states.append(chunk_hidden)
+
+    # Average across chunks if needed
+    if len(hidden_states) > 1:
+        return np.mean(hidden_states, axis=0)
+    elif hidden_states:
+        return hidden_states[0]
+    else:
+        return np.zeros(model.config.hidden_size)  # Return zero vector if empty
+
+
+def main():
+    # File paths
+    fasta_file_path = r"D:\PlasmidGPT\plasmids.fasta" #Replace with your file path
+    pt_file_path = r"D:\PlasmidGPT\pretrained_model.pt" #Replace with your file path
+    tokenizer_path = r"D:\PlasmidGPT\addgene_trained_dna_tokenizer.json" #Replace with your file path
+
+    # Device setup
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
+    if device == 'cuda':
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+    # Load model safely
+    try:
+        model = torch.load(pt_file_path, map_location=device)
+        model.eval()
+        model = model.to(device)
+        print("Model loaded successfully.")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return
+
+    # Load tokenizer
+    try:
+        tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
+        special_tokens_dict = {'additional_special_tokens': ['[PROMPT]', '[PROMPT2]']}
+        num_added_tokens = tokenizer.add_special_tokens(special_tokens_dict)
+        print("Tokenizer loaded successfully.")
+    except Exception as e:
+        print(f"Error loading tokenizer: {e}")
+        return
+
+    # Parse sequences
+    try:
+        sequences = parse_sequences(fasta_file_path)
+        print(f"Found {len(sequences)} sequences")
+    except Exception as e:
+        print(f"Error parsing sequences: {e}")
+        return
+
+    # Process each sequence
+    hidden_list = []
+    sequence_ids = []
+    successful = 0
+
+    for seq_id, sequence in sequences.items():
+        try:
+            if len(sequence) == 0:
+                print(f"Skipping empty sequence: {seq_id}")
+                continue
+
+            print(f"Processing {seq_id} (length: {len(sequence)})")
+
+            embedding = process_sequence(sequence, model, tokenizer, device)
+            hidden_list.append(embedding)
+            sequence_ids.append(seq_id)
+            successful += 1
+
+        except Exception as e:
+            print(f"Error processing sequence {seq_id}: {e}")
+            continue
+
+    if hidden_list:
+        hidden_array = np.array(hidden_list)
+        print(f"Finished calculation of embeddings. Successfully processed {successful}/{len(sequences)} sequences")
+        print(f"Embeddings shape: {hidden_array.shape}")
+
+        # Save results
+        np.save("sequence_embeddings.npy", hidden_array)
+        with open("sequence_ids.txt", "w") as f:
+            f.write("\n".join(sequence_ids))
+        print("Saved embeddings to sequence_embeddings.npy and sequence IDs to sequence_ids.txt")
+    else:
+        print("No sequences were successfully processed.")
+
+
+if __name__ == '__main__':
+    main()
 ```
 ### command line
 To generate plasmid sequence using the model, please run the following command:
@@ -71,26 +193,8 @@ python generate.py --model_dir ../pretrained_model
 ```
 The ```../pretrained_model``` folder should contain the model file and the tokenizer.
 
-For a full list of options, please run:
-
-```
-python generate.py -h
-```
-
-Arguments description
-
-| argument | description |
-| ------------- | ------------- |
-| ```-h```, ```--help```  | show help message and exit  |
-| ```-m```, ```--model_dir```  | path to the directory containing the pretrained model and tokenizer, __required__  |
-|  ```-s```, ```--start_sequence```| starting DNA sequence for sequence generation  |
-| ```-f```, ```--fasta_file```| FASTA file containing the starting sequence  |
-| ```-n```, ```--num_sequences``` | number of sequences to generate, default value: 1  |
-| ```-l```, ```--max_length``` | maximum length of the tokenized generated sequence, default value: 300 |
-| ```-t```, ```--temperature``` | temperature for sequence generation (controls randomness), default value: 1.0  |
-| ```-o```, ```--output``` | output file name for the generated sequences, default value: generated_sequence.fasta|
-
-The model output will be stored in the ```generated_sequence.fasta``` file. The script should automatically detect whether to use CUDA (GPU) or CPU based on availability. If you encounter a CUDA-related error when running on a CPU-only machine, the script will handle this by falling back to CPU.
+The model output will be stored in the ```sequence_embeddings.npy```and```sequence_ids.txt``` file. 
+The script should automatically detect whether to use CUDA (GPU) or CPU based on availability. If you encounter a CUDA-related error when running on a CPU-only machine, the script will handle this by falling back to CPU.
 
 
 ### notebooks
@@ -99,66 +203,80 @@ Please also check our jupyter notebook [PlasmidGPT_generate.ipynb](https://githu
 Or, you can easily use our [Colab Notebook](https://colab.research.google.com/drive/1xWbekcTpcGMSiQE6LkRnqSTjswDkKAoc?usp=sharing) in the browser. Please make sure to connect to a GPU instance (e.g., T4 GPU). The notebook will automatically download the pretrained model and tokenizer. The plasmid sequence can be generated based on the user's specified start sequence and downloaded in the ```.fasta``` file format.
 
 
-## Model embeddings
+## t - SNE Dimensionality Reduction and Visualization
 ```python
-# calculation of model embeddings
-model.config.output_hidden_states = True
+import matplotlib
+matplotlib.use('QtAgg')
 
-# Inference to obtain hidden states
-with torch.no_grad():
-    outputs = model(input_ids)
-    hidden_states = outputs.hidden_states[-1].cpu().numpy()
-    hidden_states_mean = np.mean(hidden_states, axis=1).reshape(-1)    
-    embedding.append(hidden_states_mean)
+import numpy as np
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+
+# 1. Load the previously saved embeddings and sequence IDs.
+embeddings = np.load("sequence_embeddings.npy")
+with open("sequence_ids.txt", "r") as f:
+    sequence_ids = f.read().splitlines()
+
+print(f"Loaded {len(embeddings)} embeddings of dimension {embeddings.shape[1]}")
+
+# 2. t-SNE dimensionality reduction
+print("Running t-SNE...")
+tsne = TSNE(
+    n_components=2,
+    perplexity=15,          # Approximately 1/30 of the data volume 
+    early_exaggeration=12,  # Control the initial clustering intensity
+    learning_rate=150,      # Recommended value for medium - sized datasets
+    max_iter=1500,          # Increase the number of iterations to ensure convergence
+    random_state=42,        # Fix the random number generator seed
+    init='pca',             # Use PCA for initialization to enhance stability
+    metric='cosine'         # A distance metric suitable for text/sequence embeddings
+)
+
+embeddings_2d = tsne.fit_transform(embeddings)
+
+# 3. Visualization
+plt.figure(figsize=(15, 10))
+scatter = plt.scatter(embeddings_2d[:, 0],
+                      embeddings_2d[:, 1],
+                      alpha=0.6,
+                      s=30,  # Point size
+                      cmap='viridis')
+
+# Add legends and labels.
+plt.title("t-SNE Visualization of Plasmid Sequence Embeddings", fontsize=14)
+plt.xlabel("t-SNE Dimension 1", fontsize=12)
+plt.ylabel("t-SNE Dimension 2", fontsize=12)
+plt.grid(alpha=0.3)
+
+# 4. Add interactive features (mouse hover to display sequence IDs)
+def hover(event):
+    if scatter.contains(event)[0]:
+        ind = scatter.contains(event)[1]["ind"][0]
+        plt.gca().set_title(f"Sequence ID: {sequence_ids[ind]}")
+        plt.draw()
+
+plt.gcf().canvas.mpl_connect('motion_notify_event', hover)
+
+# 5. Save and display
+plt.tight_layout()
+plt.savefig("tsne_visualization.png", dpi=300, bbox_inches='tight')
+print("Saved visualization to tsne_visualization.png")
+plt.show()
 ```
-### command
-To generate plasmid sequence embeddings, please run the following command:
-```Python
-python embeddings.py [-h] -m MODEL_DIR -f FASTA_FILE [-o OUTPUT_FILE]
-```
 
-Arguments description
-
-| argument | description |
+| Outputs | description |
 | ------------- | ------------- |
-| ```-h```, ```--help```  | show help message and exit  |
-| ```-m```, ```--model_dir```  | path to the directory containing the pretrained model and tokenizer, __required__  |
-|  ```-f```, ```--fasta_file```| FASTA file containing DNA sequences for the embedding calculation, __required__  |
-| ```-o```, ```--output_file```| output file name for saving the embeddings |
-
-The model output will be save in the ```embeddings.txt``` file.
+|  ```sequence_embeddings.npy```  | saved embeddings  |
+| ```sequence_ids.txt```  | corresponding IDs  |
+|   ```plasmid_tsne.png```| from Embedding Calculation.py  |
+| ```tsne_visualization.png```| from t - SNE Dimensionality Reduction and Visualization.py |
 
 
-## Sequence annotation
-For prediction of attributes, please check our models in the ```prediction_models``` folder.
-
-### command
-To predict lab of origin based on input fasta file, please run the following command:
-```Python
-python prediction.py [-h] -m MODEL_DIR -i INPUT_FILE [-e] -nn NN_MODEL -l LAB_LIST [-o OUTPUT_FILE] [-n TOP_N]
-```
-The neural network model for lab prediction is provided in ```./prediction_models/embedding_prediction_labs.pth```. The lab labels are provided in ```./prediction_models/lab_list.txt```.
-
-Arguments description
-
-| argument | description |
-| ------------- | ------------- |
-| ```-h```, ```--help```  | show help message and exit  |
-| ```-m```, ```--model_dir```  | path to the directory containing the pretrained model and tokenizer, __required__  |
-|  ```-i```, ```--input_file```| FASTA file or embeddings file as input, __required__  |
-| ```-e```, ```--embedding_file```| indicates if the input is an embedding file |
-| ```-nn```, ```--nn_model```| path to the neural network model for lab prediction, __required__ |
-| ```-l```, ```--lab_list```| path to the file containing the lab labels, __required__ |
-| ```-o```, ```--output_file```| output file name for lab predictions |
-| ```-n```, ```--top_n```| number of top predictions to output, default value: 10 |
-
-The top predictions will be stored in the file ```lab_predictions.txt```, where each row corresponds to one input sequence.
-
-### notebooks
-We have provided the jupyter notebook [PlasmidGPT_predict.ipynb](https://github.com/lingxusb/PlasmidGPT/blob/main/notebooks/PlasmidGPT_predict.ipynb) for the prediction of lab of origin.
-
-The [Colab Notebook](https://colab.research.google.com/drive/1vo27RBnScf_cOISBdd13YN_hr5-ZVNHx?usp=sharing) can be easily used in the browser to predict the lab of origin, species, and vector type for the input sequence. The notebook will automatically download all related models and make predictions based on the user's input plasmid sequence. Please use the drop-down list to select the feature to predict, and the top 10 predictions will be displayed.
+### notes
+GPU will be auto-detected for acceleration
+Ensure correct file paths before running
 
 
 ## Reference
 - [PlasmidGPT: a generative framework for plasmid design and annotation](https://www.biorxiv.org/content/10.1101/2024.09.30.615762v1)
+- (https://github.com/lingxusb/PlasmidGPT)
