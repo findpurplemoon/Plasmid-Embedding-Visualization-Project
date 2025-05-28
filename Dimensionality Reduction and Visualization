@@ -1,0 +1,58 @@
+import matplotlib
+matplotlib.use('QtAgg')
+# 其余代码保持不变
+
+import numpy as np
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+
+# 1. 加载之前保存的embedding和序列ID
+embeddings = np.load("sequence_embeddings.npy")
+with open("sequence_ids.txt", "r") as f:
+    sequence_ids = f.read().splitlines()
+
+print(f"Loaded {len(embeddings)} embeddings of dimension {embeddings.shape[1]}")
+
+# 2. t-SNE降维
+print("Running t-SNE...")
+tsne = TSNE(
+    n_components=2,
+    perplexity=15,          # 约为数据量的1/30 (518/30≈17，取15更稳定)
+    early_exaggeration=12,  # 控制初始聚类强度
+    learning_rate=150,      # 中等规模数据的推荐值
+    max_iter=1500,           # 增加迭代次数确保收敛
+    random_state=42,        # 固定随机种子
+    init='pca',             # 用PCA初始化提升稳定性
+    metric='cosine'         # 适合文本/序列embedding的距离度量
+)
+
+embeddings_2d = tsne.fit_transform(embeddings)
+
+# 3. 可视化
+plt.figure(figsize=(15, 10))
+scatter = plt.scatter(embeddings_2d[:, 0],
+                      embeddings_2d[:, 1],
+                      alpha=0.6,
+                      s=30,  # 点的大小
+                      cmap='viridis')
+
+# 添加图例和标签
+plt.title("t-SNE Visualization of Plasmid Sequence Embeddings", fontsize=14)
+plt.xlabel("t-SNE Dimension 1", fontsize=12)
+plt.ylabel("t-SNE Dimension 2", fontsize=12)
+plt.grid(alpha=0.3)
+
+# 4. 添加交互功能（鼠标悬停显示序列ID）
+def hover(event):
+    if scatter.contains(event)[0]:
+        ind = scatter.contains(event)[1]["ind"][0]
+        plt.gca().set_title(f"Sequence ID: {sequence_ids[ind]}")
+        plt.draw()
+
+plt.gcf().canvas.mpl_connect('motion_notify_event', hover)
+
+# 5. 保存和显示
+plt.tight_layout()
+plt.savefig("tsne_visualization.png", dpi=300, bbox_inches='tight')
+print("Saved visualization to tsne_visualization.png")
+plt.show()
