@@ -1,0 +1,140 @@
+import re
+import torch
+import numpy as np
+from transformers import PreTrainedTokenizerFast
+
+
+def parse_sequences(file_path: str) -> dict:
+    """Parse FASTA file and return dictionary of sequences"""
+    sequences = {}
+    current_id = None
+    current_seq = []
+
+    with open(file_path, 'r') as file:
+        for line in file:
+            line = line.strip()
+            if line.startswith('>'):
+                if current_id is not None:
+                    sequences[current_id] = ''.join(current_seq)
+                current_id = line[1:]
+                current_seq = []
+            else:
+                cleaned_line = re.sub(r'[^A-Za-z]', '', line.upper())
+                if cleaned_line:
+                    current_seq.append(cleaned_line)
+
+        if current_id is not None and current_seq:
+            sequences[current_id] = ''.join(current_seq)
+
+    return sequences
+
+
+def process_sequence(sequence, model, tokenizer, device, max_length=1024):
+    """Process a single sequence, handling long sequences by chunking"""
+    # Tokenize with the same pattern as your original code
+    idx = [3] * 10
+    tokenized_sequence = idx + [2] + tokenizer.encode(sequence)
+
+    # Split into chunks if too long
+    chunks = [tokenized_sequence[i:i + max_length] for i in range(0, len(tokenized_sequence), max_length)]
+
+    hidden_states = []
+    for chunk in chunks:
+        # Convert to tensor and move to device
+        input_ids = torch.tensor([chunk], dtype=torch.long).to(device)
+
+        # Get embeddings
+        with torch.no_grad():
+            model.config.output_hidden_states = True
+            outputs = model(input_ids)
+            chunk_hidden = outputs.hidden_states[-1].cpu().numpy()
+            chunk_hidden = np.mean(chunk_hidden, axis=1).reshape(-1)
+            hidden_states.append(chunk_hidden)
+
+    # Average across chunks if needed
+    if len(hidden_states) > 1:
+        return np.mean(hidden_states, axis=0)
+    elif hidden_states:
+        return hidden_states[0]
+    else:
+        return np.zeros(model.config.hidden_size)  # Return zero vector if empty
+
+
+def main():
+    # File paths
+    fasta_file_path = r"D:\PlasmidGPT\plasmids.fasta"
+    pt_file_path = r"D:\PlasmidGPT\pretrained_model.pt"
+    tokenizer_path = r"D:\PlasmidGPT\addgene_trained_dna_tokenizer.json"
+
+    # Device setup
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
+    if device == 'cuda':
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+    # Load model safely
+    try:
+        model = torch.load(pt_file_path, map_location=device)
+        model.eval()
+        model = model.to(device)
+        print("Model loaded successfully.")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return
+
+    # Load tokenizer
+    try:
+        tokenizer = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path)
+        special_tokens_dict = {'additional_special_tokens': ['[PROMPT]', '[PROMPT2]']}
+        num_added_tokens = tokenizer.add_special_tokens(special_tokens_dict)
+        print("Tokenizer loaded successfully.")
+    except Exception as e:
+        print(f"Error loading tokenizer: {e}")
+        return
+
+    # Parse sequences
+    try:
+        sequences = parse_sequences(fasta_file_path)
+        print(f"Found {len(sequences)} sequences")
+    except Exception as e:
+        print(f"Error parsing sequences: {e}")
+        return
+
+    # Process each sequence
+    hidden_list = []
+    sequence_ids = []
+    successful = 0
+
+    for seq_id, sequence in sequences.items():
+        try:
+            if len(sequence) == 0:
+                print(f"Skipping empty sequence: {seq_id}")
+                continue
+
+            print(f"Processing {seq_id} (length: {len(sequence)})")
+
+            embedding = process_sequence(sequence, model, tokenizer, device)
+            hidden_list.append(embedding)
+            sequence_ids.append(seq_id)
+            successful += 1
+
+        except Exception as e:
+            print(f"Error processing sequence {seq_id}: {e}")
+            continue
+
+    if hidden_list:
+        hidden_array = np.array(hidden_list)
+        print(f"Finished calculation of embeddings. Successfully processed {successful}/{len(sequences)} sequences")
+        print(f"Embeddings shape: {hidden_array.shape}")
+
+        # Save results
+        np.save("sequence_embeddings.npy", hidden_array)
+        with open("sequence_ids.txt", "w") as f:
+            f.write("\n".join(sequence_ids))
+        print("Saved embeddings to sequence_embeddings.npy and sequence IDs to sequence_ids.txt")
+    else:
+        print("No sequences were successfully processed.")
+
+
+if __name__ == '__main__':
+    main()
